@@ -5,7 +5,9 @@
 from __future__ import annotations
 import pandas as pd
 from .holidays import is_business_day
+from .debugger import log_exceptions
 
+@log_exceptions
 def project_intervals(
     pivots_df: pd.DataFrame,
     intervals: list[int],
