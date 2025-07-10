@@ -7,7 +7,17 @@
 from __future__ import annotations
 import streamlit as st, pandas as pd, plotly.graph_objects as go
 from pathlib import Path
-from engine import detect_pivots, project_intervals, load_holiday_calendar
+import os
+from engine import (
+    detect_pivots,
+    project_intervals,
+    load_holiday_calendar,
+    setup_debugger,
+    log_exceptions,
+)
+
+if os.getenv("DEBUG", "0") == "1":
+    setup_debugger()
 
 st.set_page_config(page_title="Time‑Cycle Strategy", layout="wide")
 st.title("📈 Time‑Cycle Overlap Visualiser (Experimental)")
@@ -31,7 +41,8 @@ with st.sidebar:
 
 # ---------------- Helper ----------------
 
-def _read_price_file(upload)->pd.DataFrame:
+@log_exceptions
+def _read_price_file(upload) -> pd.DataFrame:
     suffix = Path(upload.name).suffix.lower()
     df = pd.read_csv(upload) if suffix==".csv" else pd.read_excel(upload)
     df.columns = [c.strip().title() for c in df.columns]

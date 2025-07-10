@@ -4,7 +4,9 @@
 from __future__ import annotations
 import pandas as pd
 import numpy as np
+from .debugger import log_exceptions
 
+@log_exceptions
 def detect_pivots(df: pd.DataFrame, pivot_range: int, min_move: float) -> pd.DataFrame:
     highs = df["High"].values
     lows = df["Low"].values

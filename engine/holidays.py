@@ -2,7 +2,9 @@
 # File: engine/holidays.py – Fixed dt.date bug
 # =============================================================
 import pandas as pd
+from .debugger import log_exceptions
 
+@log_exceptions
 def load_holiday_calendar(uploaded_file_object=None, adhoc=None):
     holidays = set()
 
@@ -17,6 +19,7 @@ def load_holiday_calendar(uploaded_file_object=None, adhoc=None):
 
     return holidays
 
+@log_exceptions
 def is_business_day(date, holidays):
     date_only = date.date() if hasattr(date, "date") else date
     return date.weekday() < 5 and date_only not in holidays
