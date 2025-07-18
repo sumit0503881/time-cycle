@@ -29,8 +29,11 @@ with st.sidebar:
     holiday_file   = st.file_uploader("Holiday CSV (optional)", type=["csv"])
     extra_holidays = st.date_input("Add ad‑hoc holidays", [])
     st.subheader("Pivot settings")
-    pivot_range = st.number_input("Pivot range (bars)", 1,100,5,1)
-    min_move    = st.number_input("Min move (points)", 0.0, value=100.0, step=1.0)
+    pivot_range = st.number_input("Pivot range (bars)", 1, 100, 5, 1)
+    min_move = st.number_input("Min move (points)", 0.0, value=100.0, step=1.0)
+    tolerance = st.number_input(
+        "Triangle tolerance (%)", 0.0, 100.0, value=0.0, step=1.0
+    )
     st.subheader("Interval list")
     iv_text = st.text_input("Comma‑separated intervals", "30,60,90,120,144,180,210,240,270,360")
     iv_list = [int(x.strip()) for x in iv_text.split(",") if x.strip().isdigit()]
@@ -64,11 +67,19 @@ if run_btn:
     holiday_set = load_holiday_calendar(uploaded_file_object=holiday_file if holiday_file else None,
                                         adhoc=extra_holidays if extra_holidays else None)
 
-    pivots_df = detect_pivots(price_df, pivot_range=int(pivot_range), min_move=min_move)
-    st.success(f"Detected {len(pivots_df)} pivots (H+L)")
+    pivots_df = detect_pivots(
+        price_df,
+        pivot_range=int(pivot_range),
+        min_move=min_move,
+        tol_pct=tolerance,
+    )
+    valid_df = pivots_df[pivots_df["valid"]]
+    st.success(
+        f"Detected {len(pivots_df)} pivots (H+L), {len(valid_df)} valid"
+    )
 
-    interval_hits = pd.DataFrame(project_intervals(pivots_df, iv_list, use_bars,
-                                                   price_df, holiday_set),
+    interval_hits = pd.DataFrame(
+        project_intervals(valid_df, iv_list, use_bars, price_df, holiday_set),
                                  columns=["Source Pivot Date","Interval (Days)","Projected Date"])
     overlaps_full  = interval_hits.groupby("Projected Date")
     overlaps_count = overlaps_full.size().to_dict()
@@ -78,7 +89,17 @@ if run_btn:
     piv_view["Pivot Date"] = piv_view["idx"].dt.strftime(date_fmt)
     piv_view["Year"]  = pivots_df["idx"].dt.year
     piv_view["Month"] = pivots_df["idx"].dt.month
-    piv_view = piv_view.rename(columns={"type":"Type","price":"Price","abs_move":"Absolute Movement"})
+    piv_view = piv_view.rename(
+        columns={
+            "type": "Type",
+            "price": "Price",
+            "move_prev": "Move Prev",
+            "move_next": "Move Next",
+            "abs_move": "Absolute Movement",
+            "valid": "Valid",
+            "reason": "Reason",
+        }
+    )
 
     rows=[]
     for pdts,grp in overlaps_full:
@@ -90,9 +111,14 @@ if run_btn:
                      "Year":pdts.year,"Month":pdts.month})
     ov_view = pd.DataFrame(rows).sort_values("Overlap Count",ascending=False)
 
-    st.session_state["pivots_view"]  = piv_view
-    st.session_state["overlaps_view"]= ov_view
-    st.session_state["chart_data"]   = (price_df,pivots_df,overlaps_count,overlap_thr)
+    st.session_state["pivots_view"] = piv_view
+    st.session_state["overlaps_view"] = ov_view
+    st.session_state["chart_data"] = (
+        price_df,
+        pivots_df,
+        overlaps_count,
+        overlap_thr,
+    )
 
 # ---------------- Display ----------------
 if "pivots_view" in st.session_state:
@@ -132,10 +158,42 @@ if "pivots_view" in st.session_state:
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=price_df.index, open=price_df["Open"],high=price_df["High"],
                                  low=price_df["Low"], close=price_df["Close"], name="Price"))
-    fig.add_trace(go.Scatter(x=pivots_df.query('type == "H"')["idx"], y=pivots_df.query('type == "H"')["price"],
-                             mode="markers", marker=dict(symbol="triangle-up",size=9,color="red"), name="Pivot High"))
-    fig.add_trace(go.Scatter(x=pivots_df.query('type == "L"')["idx"], y=pivots_df.query('type == "L"')["price"],
-                             mode="markers", marker=dict(symbol="triangle-down",size=9,color="green"), name="Pivot Low"))
+    fig.add_trace(
+        go.Scatter(
+            x=pivots_df.query('type == "H" and valid')["idx"],
+            y=pivots_df.query('type == "H" and valid')["price"],
+            mode="markers",
+            marker=dict(symbol="triangle-up", size=9, color="red"),
+            name="Valid High",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=pivots_df.query('type == "H" and not valid')["idx"],
+            y=pivots_df.query('type == "H" and not valid')["price"],
+            mode="markers",
+            marker=dict(symbol="triangle-up-open", size=9, color="pink"),
+            name="Invalid High",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=pivots_df.query('type == "L" and valid')["idx"],
+            y=pivots_df.query('type == "L" and valid')["price"],
+            mode="markers",
+            marker=dict(symbol="triangle-down", size=9, color="green"),
+            name="Valid Low",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=pivots_df.query('type == "L" and not valid')["idx"],
+            y=pivots_df.query('type == "L" and not valid')["price"],
+            mode="markers",
+            marker=dict(symbol="triangle-down-open", size=9, color="lightgreen"),
+            name="Invalid Low",
+        )
+    )
     for dt,cnt in overlaps_count.items():
         if cnt>=overlap_thr:
             fig.add_shape(type="line",x0=dt,x1=dt,y0=price_df["Low"].min(),y1=price_df["High"].max(),
