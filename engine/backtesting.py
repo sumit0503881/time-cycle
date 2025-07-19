@@ -200,6 +200,58 @@ def analyze_intervals(validation_results: List[Dict]) -> Dict:
 
 
 @log_exceptions
+def filter_by_overlap_count(
+    projections: List[Tuple[pd.Timestamp, int, pd.Timestamp]],
+    overlap_counts: Dict[pd.Timestamp, int],
+    min_overlap: int
+) -> List[Tuple[pd.Timestamp, int, pd.Timestamp]]:
+    """Filter projections to only include those with minimum overlap count."""
+    filtered = []
+    for source_date, interval, proj_date in projections:
+        if proj_date in overlap_counts and overlap_counts[proj_date] >= min_overlap:
+            filtered.append((source_date, interval, proj_date))
+    return filtered
+
+
+@log_exceptions
+def analyze_overlap_accuracy(
+    validation_results: List[Dict],
+    overlap_counts: Dict[pd.Timestamp, int]
+) -> pd.DataFrame:
+    """Analyze success rate by overlap count."""
+    overlap_stats = {}
+    
+    for result in validation_results:
+        proj_date = result['projected_date']
+        if proj_date in overlap_counts:
+            overlap_count = overlap_counts[proj_date]
+            
+            if overlap_count not in overlap_stats:
+                overlap_stats[overlap_count] = {
+                    'total': 0,
+                    'successful': 0
+                }
+            
+            overlap_stats[overlap_count]['total'] += 1
+            if result['success']:
+                overlap_stats[overlap_count]['successful'] += 1
+    
+    # Convert to dataframe
+    rows = []
+    for overlap_count, stats in sorted(overlap_stats.items()):
+        if stats['total'] > 0:
+            success_rate = stats['successful'] / stats['total'] * 100
+            rows.append({
+                'Overlap Count': overlap_count,
+                'Total Projections': stats['total'],
+                'Successful': stats['successful'],
+                'Success Rate %': f"{success_rate:.1f}"
+            })
+    
+    return pd.DataFrame(rows)
+
+
+@log_exceptions
 def generate_insights(interval_stats: Dict, validation_results: List[Dict]) -> List[str]:
     """Generate meaningful insights from backtesting results."""
     
