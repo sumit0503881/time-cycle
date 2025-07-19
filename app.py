@@ -1,6 +1,6 @@
 # =============================================================
 # File: app.py – Time‑Cycle Overlap Visualiser (Experimental)
-# Added: Triangle-based pivot filtering
+# Added: Triangle-based pivot filtering + Backtesting module
 # Updated: December 2024
 # =============================================================
 from __future__ import annotations
@@ -13,6 +13,8 @@ from engine import (
     load_holiday_calendar,
     setup_debugger,
     log_exceptions,
+    analyze_all_projections,
+    generate_insights,
 )
 from engine.triangle import filter_pivots_by_triangle
 
@@ -83,6 +85,36 @@ with st.sidebar:
     mode     = st.selectbox("Interval unit", ["Bars","Calendar Days"])
     use_bars = mode=="Bars"
     overlap_thr = st.number_input("Highlight threshold (≥ N overlaps)", 1,100,3,1)
+    
+    # Backtesting Settings
+    st.subheader("Backtesting Settings")
+    enable_backtesting = st.checkbox("Enable Backtesting", value=False)
+    
+    if enable_backtesting:
+        lookback_candles = st.number_input(
+            "Trend lookback (candles)", 
+            min_value=3, 
+            max_value=20, 
+            value=5,
+            help="Number of candles to analyze for trend before projected date"
+        )
+        
+        tolerance_window = st.number_input(
+            "Reversal tolerance (candles)", 
+            min_value=1, 
+            max_value=10, 
+            value=3,
+            help="Maximum candles after projection to check for reversal"
+        )
+        
+        min_success_candles = st.number_input(
+            "Success criteria (candles)", 
+            min_value=1, 
+            max_value=5, 
+            value=1,
+            help="Minimum consecutive candles closing above/below to confirm reversal"
+        )
+    
     run_btn = st.button("▶️ Run analysis", type="primary")
 
 # ---------------- Helper ----------------
@@ -126,6 +158,45 @@ if run_btn:
                                  columns=["Source Pivot Date","Interval (Days)","Projected Date"])
     overlaps_full  = interval_hits.groupby("Projected Date")
     overlaps_count = overlaps_full.size().to_dict()
+    
+    # Run backtesting if enabled
+    backtest_results = None
+    interval_analysis = None
+    insights = []
+    
+    if enable_backtesting:
+        # Convert interval_hits to list of tuples for backtesting
+        projections = [(row["Source Pivot Date"], row["Interval (Days)"], row["Projected Date"]) 
+                      for _, row in interval_hits.iterrows()]
+        
+        # Run validation
+        validation_results, interval_stats = analyze_all_projections(
+            projections,
+            price_df,
+            tolerance_window,
+            min_success_candles,
+            lookback_candles
+        )
+        
+        # Generate insights
+        insights = generate_insights(interval_stats, validation_results)
+        
+        # Create dataframe for interval analysis
+        interval_rows = []
+        for interval, stats in sorted(interval_stats.items()):
+            interval_rows.append({
+                "Interval": interval,
+                "Total Projections": stats['total_count'],
+                "Successful": stats['success_count'],
+                "Success Rate %": f"{stats['success_rate']:.1f}",
+                "Immediate Reversals": stats['immediate_reversals'],
+                "Immediate %": f"{stats['immediate_reversal_rate']:.1f}",
+                "Avg Candles to Reversal": f"{stats['avg_candles_to_reversal']:.1f}"
+            })
+        interval_analysis = pd.DataFrame(interval_rows)
+        
+        # Store validation results
+        backtest_results = pd.DataFrame(validation_results)
 
     # tables
     piv_view = pivots_df.copy()
@@ -152,6 +223,7 @@ if run_btn:
     st.session_state["pivots_view"]  = piv_view
     st.session_state["overlaps_view"]= ov_view
     st.session_state["chart_data"]   = (price_df,pivots_df,overlaps_count,overlap_thr,triangle_settings)
+    st.session_state["backtest_results"] = (backtest_results, interval_analysis, insights, enable_backtesting)
 
 # ---------------- Display ----------------
 if "pivots_view" in st.session_state:
@@ -160,6 +232,10 @@ if "pivots_view" in st.session_state:
     price_df, pivots_df, overlaps_count, overlap_thr, triangle_settings = st.session_state["chart_data"]
 
     pivot_tab, overlap_tab = st.tabs(["🔺 Pivots","🎯 Overlaps"])
+    
+    # Add backtesting tab if enabled
+    if "backtest_results" in st.session_state and st.session_state["backtest_results"][3]:
+        pivot_tab, overlap_tab, backtest_tab = st.tabs(["🔺 Pivots","🎯 Overlaps", "📊 Backtesting"])
 
     # ----- Pivot Tab -----
     with pivot_tab:
@@ -192,6 +268,44 @@ if "pivots_view" in st.session_state:
         st.dataframe(ov_f.drop(columns=["Year","Month"]), use_container_width=True)
         csv_overlap = ov_f.drop(columns=["Year","Month"]).to_csv(index=False).encode("utf-8")
         st.download_button("Download Overlap Table", csv_overlap, "overlaps.csv", "text/csv")
+    
+    # ----- Backtesting Tab -----
+    if "backtest_results" in st.session_state and st.session_state["backtest_results"][3]:
+        backtest_results, interval_analysis, insights, _ = st.session_state["backtest_results"]
+        
+        with backtest_tab:
+            st.subheader("Interval Performance Analysis")
+            
+            # Display insights
+            if insights:
+                st.info("\n\n".join(insights))
+            
+            # Display interval analysis table
+            if interval_analysis is not None and not interval_analysis.empty:
+                st.dataframe(
+                    interval_analysis.sort_values("Success Rate %", ascending=False),
+                    use_container_width=True
+                )
+                
+                # Download button for interval analysis
+                csv_intervals = interval_analysis.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download Interval Analysis", 
+                    csv_intervals, 
+                    "interval_analysis.csv", 
+                    "text/csv"
+                )
+                
+                # Show detailed results if user wants
+                show_details = st.checkbox("Show detailed validation results")
+                if show_details and backtest_results is not None:
+                    st.subheader("Detailed Validation Results")
+                    # Format the results for display
+                    display_results = backtest_results[['source_date', 'interval', 'projected_date', 
+                                                       'success', 'candles_to_reversal', 'prior_trend', 'reason']]
+                    display_results['source_date'] = display_results['source_date'].dt.strftime(date_fmt)
+                    display_results['projected_date'] = display_results['projected_date'].dt.strftime(date_fmt)
+                    st.dataframe(display_results, use_container_width=True)
 
     # ----- Chart (with triangle overlays) -----
     fig = go.Figure()
