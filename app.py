@@ -199,9 +199,9 @@ if "pivots_view" in st.session_state:
     overlaps_view = st.session_state["overlaps_view"]
     price_df, pivots_df, overlaps_count, overlap_thr, triangle_settings = st.session_state["chart_data"]
 
-    tabs = ["\ud83d\udd3a Pivots", "\ud83c\udfaf Overlaps"]
+    tabs = ["Pivots", "Overlaps"]
     if len(st.session_state.get("backtest_results", [])) == 5 and st.session_state["backtest_results"][4]:
-        tabs.append("\ud83d\udcca Backtesting")
+        tabs.append("Backtesting")
 
     tab_objs = st.tabs(tabs)
     pivot_tab, overlap_tab = tab_objs[0], tab_objs[1]
