@@ -1,8 +1,7 @@
 # =============================================================
-# File: app.py – Time‑Cycle Overlap Visualiser (Final Unified Version)
-# Description: Combines v10–v14 with triangle filter, revised backtesting,
-#              overlap filtering, session state upgrades, and fixed tab logic
-# Last Updated: July 2025
+# File: app.py – Time‑Cycle Overlap Visualiser with Pivot Validity Tracking
+# Description: Enhanced with invalid pivot display and rejection reasons
+# Last Updated: December 2024
 # =============================================================
 
 from __future__ import annotations
@@ -38,6 +37,7 @@ with st.sidebar:
     st.subheader("Pivot settings")
     pivot_range = st.number_input("Pivot range (bars)", 1,100,5,1)
     min_move    = st.number_input("Min move (points)", 0.0, value=100.0, step=1.0)
+    show_invalid_pivots = st.checkbox("Show invalid pivots", value=False)
 
     st.subheader("Triangle Filter Settings")
     enable_triangle = st.checkbox("Enable Triangle Filter", value=False)
@@ -96,10 +96,32 @@ if run_btn:
     holiday_set = load_holiday_calendar(uploaded_file_object=holiday_file,
                                         adhoc=extra_holidays)
 
-    all_pivots_df = detect_pivots(price_df, pivot_range=int(pivot_range), min_move=min_move)
-    pivots_df = filter_pivots_by_triangle(price_df, all_pivots_df, triangle_settings)
-
-    st.success(f"Detected {len(all_pivots_df)} pivots total, {len(pivots_df)} after triangle filter" if enable_triangle else f"Detected {len(pivots_df)} pivots (H+L)")
+    # Get all pivots with validity tracking
+    all_pivots_with_validity = detect_pivots(price_df, pivot_range=int(pivot_range), min_move=min_move, return_all=True)
+    
+    # Filter to valid pivots for triangle analysis
+    valid_pivots_df = all_pivots_with_validity[all_pivots_with_validity["valid"]].copy()
+    
+    # Apply triangle filter to valid pivots
+    pivots_df = filter_pivots_by_triangle(price_df, valid_pivots_df, triangle_settings)
+    
+    # Add triangle rejection info to pivots that didn't pass triangle filter
+    if enable_triangle:
+        triangle_rejected_ids = set(valid_pivots_df["idx"]) - set(pivots_df["idx"])
+        for idx in triangle_rejected_ids:
+            mask = all_pivots_with_validity["idx"] == idx
+            all_pivots_with_validity.loc[mask, "valid"] = False
+            all_pivots_with_validity.loc[mask, "rejection_reason"] = "Failed triangle filter criteria"
+    
+    # Summary statistics
+    total_potential = len(all_pivots_with_validity)
+    total_valid = len(valid_pivots_df)
+    total_after_triangle = len(pivots_df)
+    
+    if enable_triangle:
+        st.success(f"Found {total_potential} potential pivots: {total_valid} valid, {total_after_triangle} after triangle filter")
+    else:
+        st.success(f"Found {total_potential} potential pivots: {total_valid} valid")
 
     interval_hits = pd.DataFrame(project_intervals(pivots_df, iv_list, use_bars, price_df, holiday_set),
                                  columns=["Source Pivot Date","Interval (Days)","Projected Date"])
@@ -134,14 +156,26 @@ if run_btn:
         else:
             st.warning(f"No projections found with {min_overlap_filter}+ overlaps")
 
-    piv_view = pivots_df.copy()
+    # Prepare pivot view with all pivots
+    piv_view = all_pivots_with_validity.copy() if show_invalid_pivots else pivots_df.copy()
     piv_view["Pivot Date"] = piv_view["idx"].dt.strftime(date_fmt)
-    piv_view["Year"] = pivots_df["idx"].dt.year
-    piv_view["Month"] = pivots_df["idx"].dt.month
+    piv_view["Year"] = piv_view["idx"].dt.year
+    piv_view["Month"] = piv_view["idx"].dt.month
     piv_view = piv_view.rename(columns={"type":"Type","price":"Price","abs_move":"Absolute Movement"})
-    if "triangle_type" in pivots_df.columns:
-        piv_view["Triangle Type"] = pivots_df["triangle_type"]
-        piv_view["Symmetry Score"] = pivots_df["symmetry_score"].round(1)
+    
+    # Add validity columns if showing invalid pivots
+    if show_invalid_pivots:
+        piv_view["Valid"] = piv_view["valid"].map({True: "✓", False: "✗"})
+        piv_view["Comments"] = piv_view["rejection_reason"].fillna("")
+    
+    # Add triangle info for valid pivots that passed triangle filter
+    if "triangle_type" in pivots_df.columns and not pivots_df.empty:
+        # Merge triangle info back to the view
+        triangle_info = pivots_df[["idx", "triangle_type", "symmetry_score"]].copy()
+        piv_view = piv_view.merge(triangle_info, on="idx", how="left")
+        if "triangle_type" in piv_view.columns:
+            piv_view["Triangle Type"] = piv_view["triangle_type"]
+            piv_view["Symmetry Score"] = piv_view["symmetry_score"].round(1)
 
     ov_view = pd.DataFrame([
         {"Date": d.strftime(date_fmt), "Overlap Count": len(g),
@@ -154,6 +188,8 @@ if run_btn:
     st.session_state["pivots_view"] = piv_view
     st.session_state["overlaps_view"] = ov_view
     st.session_state["chart_data"] = (price_df, pivots_df, overlaps_count, overlap_thr, triangle_settings)
+    st.session_state["all_pivots_with_validity"] = all_pivots_with_validity
+    st.session_state["show_invalid_pivots"] = show_invalid_pivots
     st.session_state["backtest_results"] = (backtest_results, interval_analysis, overlap_analysis, insights, enable_backtesting)
 
 # ---------------- Display ----------------
@@ -175,10 +211,19 @@ if "pivots_view" in st.session_state:
         st.subheader("Pivot Highs and Lows")
         yr_sel = st.selectbox("Year",  ["All"] + sorted(pivots_view["Year"].unique()), 0, key="pv_year")
         mn_sel = st.selectbox("Month", ["All"] + list(range(1,13)), 0, key="pv_month", format_func=lambda m: m if m=="All" else f"{m:02d}")
+        
         pv_f = pivots_view.copy()
         if yr_sel != "All": pv_f = pv_f[pv_f["Year"] == yr_sel]
         if mn_sel != "All": pv_f = pv_f[pv_f["Month"] == mn_sel]
-        cols = ["Pivot Date", "Type", "Price", "Absolute Movement"] + [c for c in ["Triangle Type", "Symmetry Score"] if c in pv_f.columns]
+        
+        # Build columns list based on what's available
+        cols = ["Pivot Date", "Type", "Price", "Absolute Movement"]
+        if "Valid" in pv_f.columns:
+            cols.extend(["Valid", "Comments"])
+        for c in ["Triangle Type", "Symmetry Score"]:
+            if c in pv_f.columns:
+                cols.append(c)
+        
         st.dataframe(pv_f[cols], use_container_width=True)
         st.download_button("Download Pivot Table", pv_f[cols].to_csv(index=False).encode("utf-8"), "pivots.csv")
 

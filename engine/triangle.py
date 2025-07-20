@@ -1,6 +1,7 @@
 # =============================================================
 # File: engine/triangle.py – Triangle-based Pivot Detection
 # Created: December 2024
+# Updated: Fixed to handle both pivot highs and pivot lows
 # =============================================================
 from __future__ import annotations
 import pandas as pd
@@ -72,23 +73,36 @@ def analyze_triangle_formation(
     pivot_idx: int,
     pivot_range: int,
     pivot_price: float,
+    pivot_type: str,
     time_scale: float,
     tolerance: float
 ) -> Optional[dict]:
-    """Analyze triangle formation for a potential pivot high."""
-    # Find left and right base points (lowest lows)
+    """Analyze triangle formation for a pivot (high or low)."""
+    # Get window boundaries
     left_start = max(0, pivot_idx - pivot_range)
     left_window = df.iloc[left_start:pivot_idx]
-    left_idx = left_window["Low"].idxmin()
-    left_price = df.loc[left_idx, "Low"]
-    left_bar_idx = df.index.get_loc(left_idx)
     
     right_end = min(len(df), pivot_idx + pivot_range + 1)
     right_window = df.iloc[pivot_idx + 1:right_end]
+    
     if right_window.empty:
         return None
-    right_idx = right_window["Low"].idxmin()
-    right_price = df.loc[right_idx, "Low"]
+    
+    # Find base points based on pivot type
+    if pivot_type == "H":
+        # For pivot high, find lowest lows on both sides
+        left_idx = left_window["Low"].idxmin()
+        left_price = df.loc[left_idx, "Low"]
+        right_idx = right_window["Low"].idxmin()
+        right_price = df.loc[right_idx, "Low"]
+    else:  # pivot_type == "L"
+        # For pivot low, find highest highs on both sides
+        left_idx = left_window["High"].idxmax()
+        left_price = df.loc[left_idx, "High"]
+        right_idx = right_window["High"].idxmax()
+        right_price = df.loc[right_idx, "High"]
+    
+    left_bar_idx = df.index.get_loc(left_idx)
     right_bar_idx = df.index.get_loc(right_idx)
     
     # Calculate triangle sides
@@ -138,14 +152,12 @@ def filter_pivots_by_triangle(
     pivot_range = triangle_settings.get("pivot_range", 5)
     
     for _, pivot in pivots_df.iterrows():
-        if pivot["type"] != "H":  # Only analyze pivot highs
-            filtered_pivots.append(pivot)
-            continue
-        
         pivot_idx = df.index.get_loc(pivot["idx"])
+        
+        # Analyze triangle for both pivot highs and lows
         triangle_info = analyze_triangle_formation(
             df, pivot_idx, pivot_range, pivot["price"], 
-            time_scale, tolerance
+            pivot["type"], time_scale, tolerance
         )
         
         if triangle_info is None:
