@@ -103,10 +103,13 @@ if run_btn:
     valid_pivots_df = all_pivots_with_validity[all_pivots_with_validity["valid"]].copy()
     
     # Apply triangle filter to valid pivots
-    pivots_df = filter_pivots_by_triangle(price_df, valid_pivots_df, triangle_settings)
+    if not valid_pivots_df.empty:
+        pivots_df = filter_pivots_by_triangle(price_df, valid_pivots_df, triangle_settings)
+    else:
+        pivots_df = pd.DataFrame()  # Empty DataFrame if no valid pivots
     
     # Add triangle rejection info to pivots that didn't pass triangle filter
-    if enable_triangle:
+    if enable_triangle and not pivots_df.empty and not valid_pivots_df.empty:
         triangle_rejected_ids = set(valid_pivots_df["idx"]) - set(pivots_df["idx"])
         for idx in triangle_rejected_ids:
             mask = all_pivots_with_validity["idx"] == idx
@@ -123,10 +126,15 @@ if run_btn:
     else:
         st.success(f"Found {total_potential} potential pivots: {total_valid} valid")
 
-    interval_hits = pd.DataFrame(project_intervals(pivots_df, iv_list, use_bars, price_df, holiday_set),
-                                 columns=["Source Pivot Date","Interval (Days)","Projected Date"])
-    overlaps_full  = interval_hits.groupby("Projected Date")
-    overlaps_count = overlaps_full.size().to_dict()
+    if not pivots_df.empty:
+        interval_hits = pd.DataFrame(project_intervals(pivots_df, iv_list, use_bars, price_df, holiday_set),
+                                     columns=["Source Pivot Date","Interval (Days)","Projected Date"])
+        overlaps_full  = interval_hits.groupby("Projected Date")
+        overlaps_count = overlaps_full.size().to_dict()
+    else:
+        interval_hits = pd.DataFrame(columns=["Source Pivot Date","Interval (Days)","Projected Date"])
+        overlaps_full = pd.DataFrame().groupby("Projected Date")
+        overlaps_count = {}
 
     backtest_results, interval_analysis, overlap_analysis, insights = None, None, None, []
 
@@ -183,7 +191,7 @@ if run_btn:
          "Intervals": ", ".join(g["Interval (Days)"].astype(str)),
          "Year": d.year, "Month": d.month}
         for d, g in overlaps_full if len(g) >= overlap_thr
-    ]).sort_values("Overlap Count", ascending=False)
+    ]).sort_values("Overlap Count", ascending=False) if overlaps_count else pd.DataFrame()
 
     st.session_state["pivots_view"] = piv_view
     st.session_state["overlaps_view"] = ov_view
@@ -229,13 +237,16 @@ if "pivots_view" in st.session_state:
 
     with overlap_tab:
         st.subheader("Overlap Dates")
-        yr2 = st.selectbox("Year",  ["All"] + sorted(overlaps_view["Year"].unique()), 0, key="ov_year")
-        mn2 = st.selectbox("Month", ["All"] + list(range(1,13)), 0, key="ov_month", format_func=lambda m: m if m=="All" else f"{m:02d}")
-        ov_f = overlaps_view.copy()
-        if yr2 != "All": ov_f = ov_f[ov_f["Year"] == yr2]
-        if mn2 != "All": ov_f = ov_f[ov_f["Month"] == mn2]
-        st.dataframe(ov_f.drop(columns=["Year", "Month"]), use_container_width=True)
-        st.download_button("Download Overlap Table", ov_f.drop(columns=["Year", "Month"]).to_csv(index=False).encode("utf-8"), "overlaps.csv")
+        if not overlaps_view.empty:
+            yr2 = st.selectbox("Year",  ["All"] + sorted(overlaps_view["Year"].unique()), 0, key="ov_year")
+            mn2 = st.selectbox("Month", ["All"] + list(range(1,13)), 0, key="ov_month", format_func=lambda m: m if m=="All" else f"{m:02d}")
+            ov_f = overlaps_view.copy()
+            if yr2 != "All": ov_f = ov_f[ov_f["Year"] == yr2]
+            if mn2 != "All": ov_f = ov_f[ov_f["Month"] == mn2]
+            st.dataframe(ov_f.drop(columns=["Year", "Month"]), use_container_width=True)
+            st.download_button("Download Overlap Table", ov_f.drop(columns=["Year", "Month"]).to_csv(index=False).encode("utf-8"), "overlaps.csv")
+        else:
+            st.info("No overlap dates found with the current settings.")
 
     if backtest_tab:
         backtest_results, interval_analysis, overlap_analysis, insights, _ = st.session_state["backtest_results"]
